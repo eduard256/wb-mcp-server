@@ -142,13 +142,32 @@ class WBClient {
         const link = card.querySelector('a')?.href;
         const nameEl = card.querySelector('[class*="product-card__name"]');
         const brandEl = card.querySelector('[class*="product-card__brand"]');
-        const priceEl = card.querySelector('[class*="price"]');
         const imgEl = card.querySelector('img');
 
-        // Parse price
-        let price = priceEl?.textContent?.trim() || '';
-        const priceMatch = price.match(/[\d\s]+/);
-        const priceNum = priceMatch ? parseInt(priceMatch[0].replace(/\s/g, '')) : null;
+        // Try multiple price selectors
+        let priceNum = null;
+        let priceText = '';
+
+        // Try wallet price first (actual price)
+        const walletPrice = card.querySelector('[class*="price-block__wallet-price"]');
+        const finalPrice = card.querySelector('[class*="price-block__final-price"]');
+        const anyPrice = card.querySelector('[class*="price"]');
+
+        const priceEl = walletPrice || finalPrice || anyPrice;
+        if (priceEl) {
+          priceText = priceEl.textContent?.trim() || '';
+          // Extract number from price text
+          const matches = priceText.match(/(\d[\d\s]*)/g);
+          if (matches) {
+            for (const match of matches) {
+              const num = parseInt(match.replace(/\s/g, ''));
+              if (num > 0 && num < 100000000) {
+                priceNum = num;
+                break;
+              }
+            }
+          }
+        }
 
         return {
           id,
@@ -156,11 +175,42 @@ class WBClient {
           name: nameEl?.textContent?.trim(),
           brand: brandEl?.textContent?.trim()?.replace(/\s*\/.*/, ''),
           price: priceNum,
-          priceFormatted: price.split('₽')[0]?.trim() + ' ₽',
+          priceFormatted: priceNum ? `${priceNum.toLocaleString('ru-RU')} ₽` : null,
           image: imgEl?.src
         };
       });
     }, limit);
+
+    // Fetch prices via API for products without price
+    const productsWithoutPrice = products.filter(p => !p.price && p.id);
+    if (productsWithoutPrice.length > 0) {
+      console.log(`[WB Client] Fetching prices for ${productsWithoutPrice.length} products via API`);
+      try {
+        const ids = productsWithoutPrice.map(p => p.id).join(';');
+        const apiUrl = `https://www.wildberries.ru/__internal/u-card/cards/v4/list?appType=1&curr=rub&dest=${this.dest}&spp=30&lang=ru&nm=${ids}`;
+        const apiData = await this.apiRequest(apiUrl);
+
+        if (apiData?.products) {
+          const priceMap = {};
+          for (const p of apiData.products) {
+            const price = p.sizes?.[0]?.price?.product;
+            if (price) {
+              priceMap[p.id] = price / 100;
+            }
+          }
+
+          // Update products with API prices
+          for (const product of products) {
+            if (!product.price && priceMap[product.id]) {
+              product.price = priceMap[product.id];
+              product.priceFormatted = `${product.price.toLocaleString('ru-RU')} ₽`;
+            }
+          }
+        }
+      } catch (e) {
+        console.error('[WB Client] Failed to fetch prices via API:', e.message);
+      }
+    }
 
     console.log(`[WB Client] Found ${products.length} products`);
     return products;
